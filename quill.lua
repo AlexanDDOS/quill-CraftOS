@@ -89,6 +89,8 @@ mod_pressed = {
 -- 'viewport' = viewport offset: {x = 1, y = 1}
 -- 'modified' = boolean indicating if the buffer has unsaved changes
 -- 'is_new' = the buffer belongs to a new/non-existing file
+-- 'mime' = MIME type detected from file name or content
+-- 'indent' = sub-table to describe indentation settings for the file buffer
 file_buffers = {}
 
 -- Index of the current text buffer
@@ -102,7 +104,13 @@ function file_buffers.new()
     cursor = {x = 1, y = 1},
     viewport = {x = 1, y = 1},
     modified = false,
-    is_new = true
+    is_new = true,
+    mime = "text/plain",
+    indent = {
+        char = ' ',  -- Indent character: ' ' or '\t'
+        width = 2,   -- Width of one indent
+        auto = true  -- Enable auto-indentation
+    }
   }
   -- Add a blank line
   buf[1] = ""
@@ -112,6 +120,38 @@ function file_buffers.new()
     file_buffers.current = #file_buffers
   end
   return buf
+end
+
+-- Count the total width of indent in characters
+function file_buffers.indentLen(indent)
+    if indent == nil then
+        return 0
+    end
+    return #indent.char * indent.width * indent.count
+end
+
+-- Get type and number of indents in selected line
+function file_buffers.getIndent(buf, y)
+  local b, e, s = buf[y]:find('^(%s*)')  -- Find line's first indents
+  if b == nil then
+    return nil -- No indent in this line 
+  end
+  local s_len = e - b + 1  -- same as #s
+  local indent = {char = s:sub(1, 1)}
+  if indent.char == '\t' then
+    indent.width = 1
+    indent.count = s_len
+  elseif buf.indent.char == ' ' then
+    -- NOTE: the default and minimal space indent width is equal to 2.
+    -- On file openning, space indent width should be determinated by comparing with other lines.
+    indent.width = math.max(buf.indent.width, 2)
+    indent.count = math.floor(s_len / indent.width)
+  else
+    -- This case is possible if the previous author mixed up tabs and spaces
+    indent.width = 4  -- Tab is usually assumed to be as wide as 4 spaces
+    indent.count = math.floor(s_len / 4)
+  end
+  return indent
 end
 
 -- Create a new file buffer from an existing file
@@ -132,16 +172,31 @@ function file_buffers.load(path, new_on_error)
     end
   else
     buf[1] = nil -- Clear the blank line
+    local least_indent
     for line in file:lines() do
       table.insert(buf, line)
+      local indent = file_buffers.getIndent(buf, #buf)
+      if indent and indent.count > 0 then
+        if not least_indent or indent.width * indent.count < least_indent.width * least_indent.count then
+          least_indent = indent
+        end
+      end
     end
     file:close()
     buf.is_new = false
     buf.path = path
     buf.name = path_s[#path_s]
-    -- Return the blank line if file is empty
     if #buf == 0 then
+      -- Return the blank line if file is empty
       buf[1] = ""
+    elseif least_indent then
+      -- Change the indent style from gathered data
+      buf.indent.char = least_indent.char
+      if buf.indent.char == ' ' then
+          buf.indent.width = math.min(buf.indent.width * least_indent.count, 8)
+      else
+          buf.indent.width = 1
+      end
     end
     -- Move the cursor and viewport to the last line
     local screen_height = select(2, term.getSize())
@@ -316,6 +371,7 @@ function ui.draw()
   if target == 'buffer' then
     local cursor_x = buf.cursor.x - buf.viewport.x + 1
     local cursor_y = buf.cursor.y - buf.viewport.y + 2
+    -- TODO: Correct visual cursor position for wide characters like tabs
     term.setCursorPos(cursor_x, cursor_y)
     term.setCursorBlink(true)
   elseif target == 'input' then
@@ -334,13 +390,16 @@ function ui.enterChar(ch, pos)
     if pos == nil then
       pos = {x = ui.input_cursor, y = 1}
     end
-    if ch ~= '\n' then
+    if ch == '\n' then
+      -- Request for input processing
+      return false, target
+    elseif ch == '\t' then
+      -- Ignore indents/tabs in input line
+      return false, target
+    else
       local s = split(ui.input, pos.x - 1)
       ui.input = s[1] .. ch .. s[2]
       return true, target
-    else
-      -- Request for input processing
-      return false, target
     end
   elseif target == 'buffer' then
     local buf = file_buffers[file_buffers.current]
@@ -348,12 +407,26 @@ function ui.enterChar(ch, pos)
       pos = buf.cursor
     end
     local s = split(buf[pos.y], pos.x - 1)
-    if ch ~= '\n' then
-      buf[pos.y] = s[1] .. ch .. s[2]
-      return true, target
-    else
+    local indent = file_buffers.getIndent(buf, pos.y)
+    if ch == '\n' then
       buf[pos.y] = s[1]
       table.insert(buf, pos.y + 1, s[2])
+      if indent then
+        indent = string.rep(indent.char, indent.width * indent.count)
+        buf[pos.y + 1] = indent .. buf[pos.y + 1]
+      end
+      return true, target
+    elseif ch == '\t' then
+      if buf.indent.char ~= '\t' then
+        local w = buf.indent.width
+        ch = string.rep(buf.indent.char, w - (pos.x - 1) % w)
+      end
+      buf[pos.y] = s[1] .. ch .. s[2]
+      buf.modified = true
+      return true, target
+    else
+      buf[pos.y] = s[1] .. ch .. s[2]
+      buf.modified = true
       return true, target
     end
   end
@@ -391,8 +464,15 @@ function ui.deleteChar(n, pos)
         -- Line removal
         buf[pos.y - 1] = buf[pos.y - 1] .. buf[pos.y]
         table.remove(buf, pos.y)
+        buf.modified = true
+        if n < -1 then
+            pos.y = pos.y - 1
+            pos.x = #buf[pos.y]
+            return ui.deleteChar(n + 1, pos)
+        end
         return true, 'buffer'
       end
+      buf.modified = buf.modified or (s[1] ~= new_s1)
       return (s[1] ~= new_s1), target
     else
       local new_s2 = s[2]:sub(n + 1)
@@ -401,8 +481,10 @@ function ui.deleteChar(n, pos)
         -- Line removal
         buf[pos.y] = buf[pos.y] .. buf[pos.y + 1]
         table.remove(buf, pos.y + 1)
+        buf.modified = true
         return true, 'buffer'
       end
+      buf.modified = buf.modified or (s[2] ~= new_s2)
       return (s[2] ~= new_s2), target
     end
   end
@@ -415,7 +497,8 @@ function ui.moveCursorX(buf, pos)
   local target = ui.cursorTarget()
   if pos == 'begin' then
     if target == 'buffer' then
-      buf.cursor.x = 1
+      local indent = file_buffers.getIndent(buf, buf.cursor.y)
+      buf.cursor.x = file_buffers.indentLen(indent) + 1
       if buf.viewport.x >= screen_width then
         buf.viewport.x = 1
       end
@@ -642,7 +725,6 @@ if start_ok then
         if buf.cursor.x >= screen_width then
           buf.viewport.x = buf.viewport.x + 1
         end
-        buf.modified = true
       elseif ui.input_mode == 'prompt' then
         -- Let the key event handler to do the job
       else
@@ -662,13 +744,39 @@ if start_ok then
           ui.enterChar('\n')
           if target == 'buffer' then
             ui.selection.state = 'unset'
-            buf.cursor.x = 1
+            local indent = file_buffers.getIndent(buf, buf.cursor.y)
+            if indent and indent.count > 0 then
+                buf.cursor.x = file_buffers.indentLen(indent) + 1
+            else
+                buf.cursor.x = 1
+            end
             buf.cursor.y = buf.cursor.y + 1
             if buf.cursor.y >= screen_height then
               buf.viewport.y = buf.viewport.y + 1
             end
           elseif target == 'input' then
-            goto EventLoop_inputHandler
+            -- Let the input handler to do the job
+          end
+        elseif key == keys.tab then
+          if target == 'buffer' then
+            ui.selection.state = 'unset'
+            if mod_pressed.shift then
+              local old_cursor_x = buf.cursor.x
+              local indent = file_buffers.getIndent(buf, buf.cursor.y)
+              if indent and indent.count > 0 then
+                buf.cursor.x = file_buffers.indentLen(indent) + 1
+                ui.deleteChar(-indent.width * #indent.char)
+                buf.cursor.x = old_cursor_x
+              end
+            else
+              ui.enterChar('\t')
+              buf.cursor.x = buf.cursor.x + buf.indent.width
+              if buf.cursor.x >= screen_width then
+                buf.viewport.x = buf.viewport.x + 1
+              end
+            end
+          else
+            ui.enterChar('\t')
           end
         elseif key == keys.backspace then
           local old_prev_line_len = (buf.cursor.y > 1 and #buf[buf.cursor.y - 1] or 0)
@@ -746,7 +854,6 @@ if start_ok then
           ui.selection.y2 = buf.cursor.y
         end
         -- Call the input handler
-        ::EventLoop_inputHandler::
         local close, status = ui.input_handler.onKey(key)
         if close then
           if ui.input_handler == ui.default_input_handler then

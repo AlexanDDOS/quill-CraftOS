@@ -6,6 +6,7 @@ and Minecraft mods [ComputerCraft](https://www.computercraft.info/wiki/Main_Page
 ## Features
 - Basic text editing capabilities.
 - Text selection (currently useless but planned for future use to cut/paste the text).
+- Auto indention
 
 ## Shortcuts
 In built-in shortcut hints, `^` stands for Ctrl and `m` stands for Alt. Most shortcuts are meant to resemble Nano unless they interfere with the PC control shortcuts.
