@@ -132,6 +132,9 @@ end
 
 -- Get type and number of indents in selected line
 function file_buffers.getIndent(buf, y)
+  if y < 1 then
+    return nil
+  end
   local b, e, s = buf[y]:find('^(%s*)')  -- Find line's first indents
   if b == nil then
     return nil -- No indent in this line 
@@ -198,6 +201,8 @@ function file_buffers.load(path, new_on_error)
           buf.indent.width = 1
       end
     end
+    -- Determine the MIME type
+    buf.mime = file_buffers.guessMimeType(buf)
     -- Move the cursor and viewport to the last line
     local screen_height = select(2, term.getSize())
     buf.cursor.y = #buf
@@ -218,8 +223,24 @@ function file_buffers.save(buf)
   if err then
     return false, err
   end
+  -- Update the MIME type
+  buf.mime = file_buffers.guessMimeType(buf)
   return true, nil
 end
+
+-- Determine the MIME type from its extension or content
+function file_buffers.guessMimeType(buf)
+  -- TODO: content analysis
+  if buf.path then
+    local ext = buf.path:lower():match("%.(%w+)$")
+    if ext == nil or ext == "lua" then
+      -- Lua files in ComputerCraft may have no extension
+      return "text/x-lua"
+    end
+  end
+  return "text/plain"  -- Fallback option
+end
+
 
 -- Clipboard / kill ring
 -- A multi-slot clipboard for copied/cut text (do not confuse with the host OS clipboard).
@@ -407,14 +428,9 @@ function ui.enterChar(ch, pos)
       pos = buf.cursor
     end
     local s = split(buf[pos.y], pos.x - 1)
-    local indent = file_buffers.getIndent(buf, pos.y)
     if ch == '\n' then
       buf[pos.y] = s[1]
-      table.insert(buf, pos.y + 1, s[2])
-      if indent then
-        indent = string.rep(indent.char, indent.width * indent.count)
-        buf[pos.y + 1] = indent .. buf[pos.y + 1]
-      end
+      ui.insertLine(buf, pos.y + 1, s[2])
       return true, target
     elseif ch == '\t' then
       if buf.indent.char ~= '\t' then
@@ -489,6 +505,61 @@ function ui.deleteChar(n, pos)
     end
   end
   return false, target
+end
+
+-- Insert a new line into the provided Y position
+function ui.insertLine(buf, y, content)
+  local indent = file_buffers.getIndent(buf, y - 1)
+  table.insert(buf, y, content or "")
+  if indent then
+    if buf.mime == "text/x-lua" then
+      -- Primitive auto-indentation for Lua files
+      local prev_indent = file_buffers.getIndent(buf, y - 2)
+      local prev_line = buf[y - 1]:lower()
+      local first_word = prev_line:match("^%s*(%w+)")
+      local last_word = prev_line:match("%w+$")
+      if first_word == "function" or first_word == "repeat" then
+        indent.count = indent.count + 1
+      elseif last_word == "else" or last_word == "do" then
+        indent.count = indent.count + 1
+      elseif last_word == "then" then
+        if first_word == "if" then
+          indent.count = indent.count + 1
+        elseif first_word == "elseif" then
+          if prev_indent and prev_indent.count > indent.count then
+            -- 'esleif' is already un-indented manually
+            indent.count = indent.count + 1
+          else
+            -- 'elseif' must be un-indented while the new line must have
+            -- the same indentation as the previous code block
+            ui.deleteIndent(buf, y - 1)
+          end
+        end
+      elseif last_word == "end" or first_word == "until" then
+        if prev_indent and indent.count >= prev_indent.count then
+          ui.deleteIndent(buf, y - 1)
+        end
+        indent.count = math.max(indent.count - 1, 0)
+      end
+    end
+    indent = string.rep(indent.char, indent.width * indent.count)
+    buf[y] = indent .. buf[y]
+  end
+  buf.modified = true
+end
+
+-- Un-indent the indexed line
+function ui.deleteIndent(buf, y)
+  local old_cursor = {x = buf.cursor.x, y = buf.cursor.y}
+  local indent = file_buffers.getIndent(buf, y)
+  if indent and indent.count > 0 then
+    buf.cursor.x = file_buffers.indentLen(indent) + 1
+    buf.cursor.y = y
+    ui.deleteChar(-indent.width * #indent.char)
+    buf.cursor = old_cursor
+    return true
+  end
+  return false
 end
 
 -- Move the cursor to the beginning or the end of the current line
@@ -744,15 +815,15 @@ if start_ok then
           ui.enterChar('\n')
           if target == 'buffer' then
             ui.selection.state = 'unset'
-            local indent = file_buffers.getIndent(buf, buf.cursor.y)
-            if indent and indent.count > 0 then
-                buf.cursor.x = file_buffers.indentLen(indent) + 1
-            else
-                buf.cursor.x = 1
-            end
             buf.cursor.y = buf.cursor.y + 1
             if buf.cursor.y >= screen_height then
               buf.viewport.y = buf.viewport.y + 1
+            end
+            local indent = file_buffers.getIndent(buf, buf.cursor.y)
+            if indent and indent.count > 0 then
+              ui.moveCursorX(buf, file_buffers.indentLen(indent) + 1)
+            else
+              ui.moveCursorX(buf, "begin")
             end
           elseif target == 'input' then
             -- Let the input handler to do the job
@@ -761,19 +832,12 @@ if start_ok then
           if target == 'buffer' then
             ui.selection.state = 'unset'
             if mod_pressed.shift then
-              local old_cursor_x = buf.cursor.x
-              local indent = file_buffers.getIndent(buf, buf.cursor.y)
-              if indent and indent.count > 0 then
-                buf.cursor.x = file_buffers.indentLen(indent) + 1
-                ui.deleteChar(-indent.width * #indent.char)
-                buf.cursor.x = old_cursor_x
+              if ui.deleteIndent(buf, buf.cursor.y) then
+                ui.moveCursorX(buf, buf.cursor.x - buf.indent.width)
               end
             else
               ui.enterChar('\t')
-              buf.cursor.x = buf.cursor.x + buf.indent.width
-              if buf.cursor.x >= screen_width then
-                buf.viewport.x = buf.viewport.x + 1
-              end
+              ui.moveCursorX(buf, buf.cursor.x + buf.indent.width)
             end
           else
             ui.enterChar('\t')
