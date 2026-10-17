@@ -96,6 +96,45 @@ file_buffers = {}
 -- Index of the current text buffer
 file_buffers.current = 0
 
+-- Clipboard / kill ring
+-- A multi-slot clipboard for copied/cut text (do not confuse with the host OS clipboard).
+-- Kill ring entites have the same structure as file buffers but they do not contain 'special' fields.
+kill_ring = {}
+
+-- Maximum length of the kill ring
+KILL_RING_MAX_LENGTH = 1
+
+
+-- Main interface table
+local ui = {
+  -- Interface header
+  prog_name = "Quill 0.1",  -- Program name
+  -- Main section
+  text = nil,  -- Displayed text buffer
+  -- Interface footer
+  input = "",  -- Input line content
+  input_invition = "", -- User input invition
+  -- Input line mode:
+  -- * 'label' = show a label in the input line,
+  -- * 'text' = text input,
+  -- * 'prompt' = yes/no prompt  
+  input_mode = 'label',
+  -- Input cursor position (X only)
+  input_cursor = 1,
+  -- Keyboard hints: {line1, line2}
+  -- Line content: {{'^X', 'Exit'}, {'^G', 'Help'}, ...}
+  key_hints = {{}, {}},
+  -- Show keyboard hints?
+  show_key_hints = true
+}
+
+-- Selection mark table
+ui.selection = {
+  state = 'unset', -- 'unset', 'changed' or 'set'
+  x1 = 1, y1 = 1,  -- first position
+  x2 = 1, y2 = 1   -- second position
+}
+
 -- Create a new empty file buffer
 function file_buffers.new()
   local buf = {
@@ -204,9 +243,12 @@ function file_buffers.load(path, new_on_error)
     -- Determine the MIME type
     buf.mime = file_buffers.guessMimeType(buf)
     -- Move the cursor and viewport to the last line
-    local screen_height = select(2, term.getSize())
+    local text_height = select(2, term.getSize()) - 2
+    if ui.show_key_hints then
+      text_height = text_height - 2
+    end
     buf.cursor.y = #buf
-    buf.viewport.y = math.max(1, buf.cursor.y - screen_height)
+    buf.viewport.y = math.max(1, buf.cursor.y - text_height + 1)
     return true, nil
   end
 end
@@ -240,44 +282,6 @@ function file_buffers.guessMimeType(buf)
   end
   return "text/plain"  -- Fallback option
 end
-
-
--- Clipboard / kill ring
--- A multi-slot clipboard for copied/cut text (do not confuse with the host OS clipboard).
--- Kill ring entites have the same structure as file buffers but they do not contain 'special' fields.
-kill_ring = {}
-
--- Maximum length of the kill ring
-KILL_RING_MAX_LENGTH = 1
-
-
--- Main interface table
-local ui = {
-  -- Interface header
-  prog_name = "Quill 0.1",  -- Program name
-  -- Main section
-  text = nil,  -- Displayed text buffer
-  -- Interface footer
-  input = "",  -- Input line content
-  input_invition = "", -- User input invition
-  -- Input line mode:
-  -- * 'label' = show a label in the input line,
-  -- * 'text' = text input,
-  -- * 'prompt' = yes/no prompt  
-  input_mode = 'label',
-  -- Input cursor position (X only)
-  input_cursor = 1,
-  -- Keyboard hints: {line1, line2}
-  -- Line content: {{'^X', 'Exit'}, {'^G', 'Help'}, ...}
-  key_hints = {{}, {}}
-}
-
--- Selection mark table
-ui.selection = {
-  state = 'unset', -- 'unset', 'changed' or 'set'
-  x1 = 1, y1 = 1,  -- first position
-  x2 = 1, y2 = 1   -- second position
-}
 
 -- Return the least and greatest position of the selection
 function ui.selection.points()
@@ -320,7 +324,11 @@ function ui.draw()
   writeAligned(title, 'right')
   invertTermColors(false)
   -- Draw the current text buffer
-  for y = 1, screen_height - 4 do
+  local text_height = screen_height - 2
+  if ui.show_key_hints then
+    text_height = text_height - 2
+  end
+  for y = 1, text_height do
     local i = buf.viewport.y + y - 1
     if i > #buf then
       break
@@ -374,17 +382,19 @@ function ui.draw()
     term.write(input_line)
   end
   invertTermColors(false)
-  for y, hints in ipairs(ui.key_hints) do
-    for x, hint in ipairs(hints) do
-      local x_pos = 1 + (x - 1) * 8
-      if x_pos + 2 + math.min(#hint[2], 5) > screen_width then
-        break
+  if ui.show_key_hints then
+    for y, hints in ipairs(ui.key_hints) do
+      for x, hint in ipairs(hints) do
+        local x_pos = 1 + (x - 1) * 8
+        if x_pos + 2 + math.min(#hint[2], 5) > screen_width then
+          break
+        end
+        term.setCursorPos(x_pos, screen_height - 2 + y)
+        invertTermColors(true)
+        term.write(hint[1])
+        invertTermColors(false)
+        term.write(' ' .. hint[2]:sub(1, 5))
       end
-      term.setCursorPos(x_pos, screen_height - 2 + y)
-      invertTermColors(true)
-      term.write(hint[1])
-      invertTermColors(false)
-      term.write(' ' .. hint[2]:sub(1, 5))
     end
   end
   -- Set cursor position
@@ -782,6 +792,10 @@ if start_ok then
   -- Event loop
   while true do
     local screen_width, screen_height = term.getSize()
+    local text_height = screen_height - 2
+    if ui.show_key_hints then
+      text_height = text_height - 2
+    end
     local buf = file_buffers[file_buffers.current]
     local event = {os.pullEventRaw()}
     local target = ui.cursorTarget()
@@ -816,7 +830,7 @@ if start_ok then
           if target == 'buffer' then
             ui.selection.state = 'unset'
             buf.cursor.y = buf.cursor.y + 1
-            if buf.cursor.y >= screen_height then
+            if buf.cursor.y >= buf.viewport.y + text_height then
               buf.viewport.y = buf.viewport.y + 1
             end
             local indent = file_buffers.getIndent(buf, buf.cursor.y)
@@ -873,7 +887,7 @@ if start_ok then
         elseif key == keys.down then
           if target == 'buffer' then
             buf.cursor.y = math.min(buf.cursor.y + 1, #buf)
-            if buf.cursor.y >= buf.viewport.y + screen_height then
+            if buf.cursor.y >= buf.viewport.y + text_height then
               buf.viewport.y = buf.viewport.y + 1
             end
             if buf.cursor.x > #buf[buf.cursor.y] then
