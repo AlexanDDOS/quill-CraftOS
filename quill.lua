@@ -273,8 +273,8 @@ end
 -- Determine the MIME type from its extension or content
 function file_buffers.guessMimeType(buf)
   -- TODO: content analysis
-  if buf.path then
-    local ext = buf.path:lower():match("%.(%w+)$")
+  if buf.name then
+    local ext = buf.name:lower():match("%.(%w+)$")
     if ext == nil or ext == "lua" then
       -- Lua files in ComputerCraft may have no extension
       return "text/x-lua"
