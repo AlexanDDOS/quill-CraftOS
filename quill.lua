@@ -334,17 +334,18 @@ function ui.draw()
       break
     end
     term.setCursorPos(1, y + 1)
+    local visible_text = buf[i]:sub(buf.viewport.x)
     if ui.selection.state == 'unset' then
-      term.write(buf[i])
+      term.write(visible_text)
     else
       local sel_start, sel_end = ui.selection.points()
       if i == sel_start.y then
-        local s = split(buf[i], sel_start.x - 1)
+        local s = split(visible_text, math.max(sel_start.x - buf.viewport.x, 0))
         term.write(s[1])
         invertTermColors(true)
         if sel_start.y == sel_end.y then
-          s = split(buf[i], sel_end.x)
-          term.write(s[1]:sub(sel_start.x))
+          s = split(visible_text, math.max(sel_end.x - buf.viewport.x + 1, 1))
+          term.write(s[1]:sub(math.max(sel_start.x - buf.viewport.x + 1, 1)))
           invertTermColors(false)
           term.write(s[2])
         else
@@ -352,17 +353,17 @@ function ui.draw()
           invertTermColors(false)
         end
       elseif i == sel_end.y then
-        local s = split(buf[i], sel_end.x - 1)
+        local s = split(visible_text, math.max(sel_end.x - buf.viewport.x + 1, 0))
         invertTermColors(true)
         term.write(s[1])
         invertTermColors(false)
         term.write(s[2])
       elseif i > sel_start.y and i < sel_end.y then
         invertTermColors(true)
-        term.write(buf[i])
+        term.write(visible_text)
         invertTermColors(false)
       else
-        term.write(buf[i])
+        term.write(visible_text)
       end
     end
   end
@@ -521,6 +522,7 @@ end
 function ui.insertLine(buf, y, content)
   local indent = file_buffers.getIndent(buf, y - 1)
   table.insert(buf, y, content or "")
+  -- TODO: replace local indent with buf.indent
   if indent then
     if buf.mime == "text/x-lua" then
       -- Primitive auto-indentation for Lua files
@@ -580,7 +582,7 @@ function ui.moveCursorX(buf, pos)
     if target == 'buffer' then
       local indent = file_buffers.getIndent(buf, buf.cursor.y)
       buf.cursor.x = file_buffers.indentLen(indent) + 1
-      if buf.viewport.x >= screen_width then
+      if buf.cursor.x <= buf.viewport.x  then
         buf.viewport.x = 1
       end
     elseif target == 'input' then
@@ -590,7 +592,7 @@ function ui.moveCursorX(buf, pos)
     if target == 'buffer' then
       buf.cursor.x = #buf[buf.cursor.y] + 1
       if buf.cursor.x >= buf.viewport.x + screen_width then
-        buf.viewport.x = buf.cursor.x - math.floor(screen_width / 2)
+        buf.viewport.x = buf.cursor.x - screen_width + 1
       end
     elseif target == 'input' then
       ui.input_cursor = #ui.input + 1
@@ -598,7 +600,11 @@ function ui.moveCursorX(buf, pos)
   elseif type(pos) == 'number' then
     if target == 'buffer' then
       buf.cursor.x = pos
-      -- TODO: fit the viewport to the arbirary position
+      if buf.cursor.x <= buf.viewport.x then
+        buf.viewport.x = math.max(buf.cursor.x - screen_width + 1, 1)
+      elseif buf.cursor.x >= buf.viewport.x + screen_width then
+        buf.viewport.x = buf.cursor.x - screen_width + 1
+      end
     elseif target == 'input' then
       ui.input_cursor = pos
     end
@@ -807,8 +813,8 @@ if start_ok then
         ui.selection.state = 'unset'
         ui.enterChar(ch)
         buf.cursor.x = buf.cursor.x + 1
-        if buf.cursor.x >= screen_width then
-          buf.viewport.x = buf.viewport.x + 1
+        if buf.cursor.x >= buf.viewport.x + screen_width then
+          buf.viewport.x = buf.cursor.x - screen_width + 1
         end
       elseif ui.input_mode == 'prompt' then
         -- Let the key event handler to do the job
@@ -880,6 +886,8 @@ if start_ok then
             end
             if buf.cursor.x > #buf[buf.cursor.y] then
               ui.moveCursorX(buf, 'end')
+            else
+              ui.moveCursorX(buf, buf.cursor.x)
             end
           else
             -- TODO: Input history browsing
@@ -892,6 +900,8 @@ if start_ok then
             end
             if buf.cursor.x > #buf[buf.cursor.y] then
               ui.moveCursorX(buf, 'end')
+            else
+              ui.moveCursorX(buf, buf.cursor.x)
             end
           elseif target == 'input' then
             -- TODO: Input history browsing
@@ -900,6 +910,9 @@ if start_ok then
           if target == 'buffer' then
             if buf.cursor.x > 1 then
               buf.cursor.x = buf.cursor.x - 1
+              if buf.cursor.x < buf.viewport.x then
+                buf.viewport.x = buf.cursor.x
+              end
             else
               buf.cursor.y = math.max(buf.cursor.y - 1, 1)
               ui.moveCursorX(buf, 'end')
@@ -911,6 +924,9 @@ if start_ok then
           if target == 'buffer' then
             if buf.cursor.x < #buf[buf.cursor.y] + 1 then
               buf.cursor.x = buf.cursor.x + 1
+              if buf.cursor.x >= buf.viewport.x + screen_width then
+                buf.viewport.x = buf.cursor.x - screen_width + 1
+              end
             else
               buf.cursor.y = math.min(buf.cursor.y + 1, #buf)
               ui.moveCursorX(buf, 'begin')
