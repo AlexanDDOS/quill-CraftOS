@@ -146,9 +146,10 @@ function file_buffers.new()
     is_new = true,
     mime = "text/plain",
     indent = {
-        char = ' ',  -- Indent character: ' ' or '\t'
-        width = 2,   -- Width of one indent
-        auto = true  -- Enable auto-indentation
+        char = ' ',   -- Indent character: ' ' or '\t'
+        width = 2,    -- Width of one indent
+        auto = true,  -- Enable auto-indentation
+        count = 0,    -- Number of indents in the line (added here for compatibility reasons)
     }
   }
   -- Add a blank line
@@ -522,42 +523,48 @@ end
 function ui.insertLine(buf, y, content)
   local indent = file_buffers.getIndent(buf, y - 1)
   table.insert(buf, y, content or "")
-  -- TODO: replace local indent with buf.indent
-  if indent then
-    if buf.mime == "text/x-lua" then
-      -- Primitive auto-indentation for Lua files
-      local prev_indent = file_buffers.getIndent(buf, y - 2)
-      local prev_line = buf[y - 1]:lower()
-      local first_word = prev_line:match("^%s*(%w+)")
-      local last_word = prev_line:match("%w+$")
-      if first_word == "function" or first_word == "repeat" then
-        indent.count = indent.count + 1
-      elseif last_word == "else" or last_word == "do" then
-        indent.count = indent.count + 1
-      elseif last_word == "then" then
-        if first_word == "if" then
-          indent.count = indent.count + 1
-        elseif first_word == "elseif" then
-          if prev_indent and prev_indent.count > indent.count then
-            -- 'esleif' is already un-indented manually
-            indent.count = indent.count + 1
-          else
-            -- 'elseif' must be un-indented while the new line must have
-            -- the same indentation as the previous code block
-            ui.deleteIndent(buf, y - 1)
-          end
-        end
-      elseif last_word == "end" or first_word == "until" then
-        if prev_indent and indent.count >= prev_indent.count then
-          ui.deleteIndent(buf, y - 1)
-        end
-        indent.count = math.max(indent.count - 1, 0)
-      end
-    end
-    indent = string.rep(indent.char, indent.width * indent.count)
-    buf[y] = indent .. buf[y]
+  if indent and indent.count > 0 then
+    ui.autoIndent(buf, y, indent)
+  else
+    ui.autoIndent(buf, y, buf.indent)
   end
   buf.modified = true
+end
+
+-- Atuomatic indention
+function ui.autoIndent(buf, y, indent)
+  if buf.mime == "text/x-lua" then
+    -- Primitive auto-indentation for Lua files
+    local prev_indent = file_buffers.getIndent(buf, y - 2)
+    local prev_line = buf[y - 1]:lower()
+    local first_word = prev_line:match("^%s*(%w+)")
+    local last_word = prev_line:match("%w+$")
+    if first_word == "function" or first_word == "repeat" then
+      indent.count = indent.count + 1
+    elseif last_word == "else" or last_word == "do" then
+      indent.count = indent.count + 1
+    elseif last_word == "then" then
+      if first_word == "if" then
+        indent.count = indent.count + 1
+      elseif first_word == "elseif" then
+        if prev_indent and prev_indent.count > indent.count then
+          -- 'esleif' is already un-indented manually
+          indent.count = indent.count + 1
+        else
+          -- 'elseif' must be un-indented while the new line must have
+          -- the same indentation as the previous code block
+          ui.deleteIndent(buf, y - 1)
+        end
+      end
+    elseif last_word == "end" or first_word == "until" then
+      if prev_indent and indent.count >= prev_indent.count then
+          ui.deleteIndent(buf, y - 1)
+      end
+      indent.count = math.max(indent.count - 1, 0)
+    end
+  end
+  indent = string.rep(indent.char, indent.width * indent.count)
+  buf[y] = indent .. buf[y]
 end
 
 -- Un-indent the indexed line
