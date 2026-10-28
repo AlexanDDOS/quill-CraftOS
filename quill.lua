@@ -217,7 +217,7 @@ function file_buffers.load(path, new_on_error)
     buf[1] = nil -- Clear the blank line
     local least_indent
     for line in file:lines() do
-      table.insert(buf, line)
+      table.insert(buf, #buf + 1, line)  -- Second argument cannot be omitted here for some reason
       local indent = file_buffers.getIndent(buf, #buf)
       if indent and indent.count > 0 then
         if not least_indent or indent.width * indent.count < least_indent.width * least_indent.count then
