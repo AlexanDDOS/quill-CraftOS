@@ -623,7 +623,7 @@ end
 -- Make an input dialogue
 -- mode - input mode;
 -- invition - input invition;
--- handler - object with a function to process input from interface.input
+-- handler - table of functions to process input from interface.input
 -- or a key combination provided in the arguments and return
 -- dialog closing flag and a status line or a new invition line,
 -- for example:
@@ -708,20 +708,20 @@ end
 ui.default_input_handler = {
   exit_prompt = false
 }
-function ui.default_input_handler.onKey(key)
-  local screen_width, screen_height = term.getSize()
+
+-- Local function to activate the save input handler
+function ui.default_input_handler.saveDialog(buf)
+  ui.input = buf.path or ""
+  ui.input_cursor = #ui.input + 1
+  ui.dialog('text', 'Write to file:', save_input_handler,
+            {{{'^C', 'Abort'}}, {}})
+end
+
+function ui.default_input_handler.onChar(ch)
   local buf = file_buffers[file_buffers.current]
-  -- Local function to activate the save input handler
-  local function gotoSave()
-    ui.input = buf.path or ""
-    ui.input_cursor = #ui.input + 1
-    ui.dialog('text', 'Write to file:', save_input_handler,
-    {{{'^C', 'Abort'}}, {}})
-  end
-  -- Key processing
   if ui.default_input_handler.exit_prompt then
     ui.default_input_handler.exit_prompt = false
-    if key == keys.y then
+    if ch == 'y' then
       if buf.path then
         local ok, err = file_buffers.save(buf)
         if ok then
@@ -733,18 +733,29 @@ function ui.default_input_handler.onKey(key)
           return false, ui.input
         end
       else
-        gotoSave()
+        ui.default_input_handler.saveDialog(buf)
       end
-    elseif key == keys.n then
+    elseif ch == 'n' then
       return true, nil -- Normal exit
-    elseif mod_pressed.ctrl and key == keys.c then
-      ui.input_mode = 'label'
-      ui.input = "Aborted"
-      ui.resetKeyHints()
-      return false, "Aborted"
     end
-  elseif mod_pressed.ctrl then
-    if key == keys.x then
+  end
+end
+
+function ui.default_input_handler.onKey(key)
+  local screen_width, screen_height = term.getSize()
+  local buf = file_buffers[file_buffers.current]
+  
+  -- Key processing
+  if mod_pressed.ctrl then
+    if ui.default_input_handler.exit_prompt then
+      if key == keys.c then
+        ui.default_input_handler.exit_prompt = false
+        ui.input_mode = 'label'
+        ui.input = "Aborted"
+        ui.resetKeyHints()
+        return false, "Aborted"
+      end
+    elseif key == keys.x then
       if buf.modified then
         -- Exit prompt
         ui.default_input_handler.exit_prompt = true
@@ -764,7 +775,7 @@ function ui.default_input_handler.onKey(key)
       ui.dialog('text', 'Read from file:', load_input_handler,
       {{{'^C', 'Abort'}}, {}})
     elseif key == keys.o then
-      gotoSave()
+      ui.default_input_handler.saveDialog(buf)
     end
   elseif mod_pressed.alt then
     if key == keys.a then
@@ -812,10 +823,13 @@ if start_ok then
     local buf = file_buffers[file_buffers.current]
     local event = {os.pullEventRaw()}
     local target = ui.cursorTarget()
+    local input_handler_function, input_handler_args = nil, {}
     if event[1] == "terminate" then
       break  -- Program termination
     elseif event[1] == "char" and not (mod_pressed.ctrl or mod_pressed.alt) then
       local ch = event[2]
+      input_handler_function = 'onChar'
+      input_handler_args = {ch}
       if target == 'buffer' then
         ui.selection.state = 'unset'
         ui.enterChar(ch)
@@ -831,6 +845,8 @@ if start_ok then
       end
     elseif event[1] == 'key' then
       local key, is_held = event[2], event[3]
+      input_handler_function = 'onKey'
+      input_handler_args = {key}
       if key == keys.leftCtrl or key == keys.rightCtrl then
         mod_pressed.ctrl = true
       elseif key == keys.leftAlt or key == keys.rightAlt then
@@ -954,23 +970,6 @@ if start_ok then
           ui.selection.x2 = buf.cursor.x
           ui.selection.y2 = buf.cursor.y
         end
-        -- Call the input handler
-        local close, status = ui.input_handler.onKey(key)
-        if close then
-          if ui.input_handler == ui.default_input_handler then
-            -- Exit from interface.default_input_handler finishes the program 
-            if status then
-              printError(status)
-            end
-            break
-          else
-            ui.input = status or ""
-            ui.dialog('label', '', ui.default_input_handler)
-            ui.resetKeyHints()
-          end
-        elseif status ~= nil then
-          ui.input_invition = status
-        end
       end
     elseif event[1] == 'key_up' then
       local key = event[2]
@@ -982,6 +981,27 @@ if start_ok then
         mod_pressed.shift = false
       end
     end
+
+    if ui.input_handler and ui.input_handler[input_handler_function] then
+      -- Call the input handler
+      local close, status = ui.input_handler[input_handler_function](table.unpack(input_handler_args))
+      if close then
+        if ui.input_handler == ui.default_input_handler then
+          -- Exit from interface.default_input_handler finishes the program 
+          if status then
+            printError(status)
+          end
+          break
+        else
+          ui.input = status or ""
+          ui.dialog('label', '', ui.default_input_handler)
+          ui.resetKeyHints()
+        end
+      elseif status ~= nil then
+        ui.input_invition = status
+      end
+    end
+
     ui.draw()
   end
   ui.cleanUp()
