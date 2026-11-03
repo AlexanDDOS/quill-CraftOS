@@ -3,6 +3,9 @@
 **Quill** is a small text editor inspired by [Nano](https://www.nano-editor.org) for [CraftOS-PC](https://www.craftos-pc.cc)
 and Minecraft mods [ComputerCraft](https://www.computercraft.info/wiki/Main_Page) and [CC: Tweaked](https://computercraft.cc). The source code is written in Lua.
 
+## Installation
+Use [`pastebin get xUAcARgH`](https://pastebin.com/xUAcARgH) command or copy the file `quill.lua` from the repository's source code to your working computer
+
 ## Features
 - Basic text editing capabilities.
 - Text selection (currently useless but planned for future use to cut/paste the text).
